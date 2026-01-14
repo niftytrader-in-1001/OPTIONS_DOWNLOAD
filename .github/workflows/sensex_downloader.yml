@@ -1,9 +1,9 @@
 name: SENSEX Expiry Data Downloader
 
 on:
-  # Run daily at 4:00 PM IST (10:30 AM UTC)
+  # Run daily at 4:30 PM IST (11:00 AM UTC)
   schedule:
-    - cron: '30 10 * * *'
+    - cron: '00 11 * * *'
   
   # Allow manual triggers
   workflow_dispatch:
@@ -16,6 +16,7 @@ on:
 jobs:
   download-sensex-data:
     runs-on: ubuntu-latest
+    timeout-minutes: 60  # 1 hour timeout
     
     env:
       TZ: Asia/Kolkata
@@ -29,11 +30,16 @@ jobs:
       with:
         python-version: '3.9'
     
+    - name: Create artifacts directory
+      run: |
+        mkdir -p artifacts
+        echo "Artifacts directory created"
+    
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
-    
+        pip install pandas requests pyotp openpyxl smartapi-python
+        
     - name: Run SENSEX Data Downloader
       env:
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -43,17 +49,46 @@ jobs:
         ANGEL_PIN: ${{ secrets.ANGEL_PIN }}
         ANGEL_TOTP_KEY: ${{ secrets.ANGEL_TOTP_KEY }}
       run: |
+        echo "Starting SENSEX data downloader..."
+        echo "Current time: $(date)"
+        echo "Timezone: $TZ"
         python sensex_data_downloader.py
+    
+    - name: List artifacts directory
+      if: always()
+      run: |
+        echo "Contents of artifacts directory:"
+        ls -la artifacts/ || echo "artifacts directory not found"
+        echo ""
+        echo "Contents of current directory:"
+        ls -la
     
     - name: Upload artifacts
       if: always()
       uses: actions/upload-artifact@v4
       with:
         name: sensex-data-artifacts
-        path: artifacts/
+        path: |
+          artifacts/
+          sensex_downloader.log
         retention-days: 7
     
-    - name: Send notification on failure
+    - name: Send success notification
+      if: success()
+      uses: appleboy/telegram-action@master
+      with:
+        to: ${{ secrets.TELEGRAM_CHAT_ID }}
+        token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        message: |
+          ✅ SENSEX Data Download Completed!
+          
+          Repository: ${{ github.repository }}
+          Run ID: ${{ github.run_id }}
+          Branch: ${{ github.ref_name }}
+          
+          View artifacts: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    
+    - name: Send failure notification
       if: failure()
       uses: appleboy/telegram-action@master
       with:
