@@ -7,22 +7,26 @@ import sys
 import requests
 import zipfile
 import io
-from dotenv import load_dotenv
 import traceback
 import logging
 import concurrent.futures
 from threading import Lock
 import json
+import importlib.util
 
 # Setup logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('sensex_downloader.log')
+    ]
+)
 logger = logging.getLogger(__name__)
 
-# Load environment variables
-load_dotenv()
-
 # ===============================
-# CONFIG - GitHub Actions Compatible
+# CONFIG
 # ===============================
 API_SLEEP = 1.0
 MAX_RETRIES = 3
@@ -32,10 +36,9 @@ WEEKS_FOR_RANGE = 4
 SENSEX_TOKEN = "99919000"
 SENSEX_STRIKE_MULTIPLE = 100
 
-# GitHub Secrets
+# GitHub Secrets (will be set from environment)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-# Angel One credentials from secrets
 ANGEL_API_KEY = os.getenv("ANGEL_API_KEY")
 ANGEL_CLIENT_ID = os.getenv("ANGEL_CLIENT_ID")
 ANGEL_PIN = os.getenv("ANGEL_PIN")
@@ -58,13 +61,48 @@ def round_to_nearest_100(price):
     return round(price / 100) * 100
 
 
+def install_package(package_name):
+    """Install a Python package if not available"""
+    try:
+        import subprocess
+        import sys
+        subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
+        logger.info(f"Successfully installed {package_name}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to install {package_name}: {e}")
+        return False
+
+
+def setup_smartapi():
+    """Dynamically setup SmartAPI"""
+    try:
+        # Try to import first
+        try:
+            from SmartApi.smartConnect import SmartConnect
+            logger.info("SmartAPI already available")
+            return SmartConnect
+        except ImportError:
+            logger.info("Installing smartapi-python...")
+            if install_package("smartapi-python"):
+                # Reload modules
+                import importlib
+                import SmartApi
+                importlib.reload(SmartApi)
+                from SmartApi.smartConnect import SmartConnect
+                return SmartConnect
+            else:
+                raise Exception("Failed to install smartapi-python")
+    except Exception as e:
+        logger.error(f"SmartAPI setup failed: {e}")
+        return None
+
+
 def get_SENSEX_historical_data(smart_api, weeks=4):
     """
     Get SENSEX historical data for specified number of weeks
-    Returns: DataFrame with OHLC data or None if fails
     """
     try:
-        # Calculate date range
         to_date = datetime.now(IST)
         from_date = to_date - timedelta(weeks=weeks)
         
@@ -87,7 +125,6 @@ def get_SENSEX_historical_data(smart_api, weeks=4):
             )
             df["Date"] = pd.to_datetime(df["Date"])
             
-            # Calculate max high and min low
             max_high = df["High"].max()
             min_low = df["Low"].min()
             current_close = df["Close"].iloc[-1] if len(df) > 0 else None
@@ -132,7 +169,6 @@ def get_SENSEX_ltp(smart_api):
 def calculate_strike_range(smart_api, buffer=1000):
     """
     Calculate strike range based on 4-week high/low
-    Returns: (start_strike, end_strike)
     """
     hist_data = get_SENSEX_historical_data(smart_api, weeks=WEEKS_FOR_RANGE)
     
@@ -140,11 +176,8 @@ def calculate_strike_range(smart_api, buffer=1000):
         min_low = hist_data["min_low"]
         max_high = hist_data["max_high"]
         
-        # Calculate range with buffer and round to nearest 100
         start_strike = round_to_nearest_100(min_low - buffer)
         end_strike = round_to_nearest_100(max_high + buffer)
-        
-        # Ensure start_strike is not negative
         start_strike = max(0, start_strike)
         
         logger.info(f"""
@@ -155,17 +188,16 @@ def calculate_strike_range(smart_api, buffer=1000):
   Start Strike: {start_strike}
   End Strike: {end_strike}
   Range Width: {end_strike - start_strike} points
-  Strike Multiple: {SENSEX_STRIKE_MULTIPLE}
 """)
         
         return start_strike, end_strike
     
-    # Fallback: Use current LTP with fixed range if historical fails
+    # Fallback
     logger.warning("Using fallback LTP-based range calculation")
     SENSEX_ltp = get_SENSEX_ltp(smart_api)
     if SENSEX_ltp is None:
         logger.error("Cannot get SENSEX LTP, using default range")
-        return 60000, 75000  # Default range
+        return 60000, 75000
     
     rounded = round_to_nearest_100(SENSEX_ltp)
     start_strike = rounded - 3500
@@ -229,7 +261,6 @@ def is_today_SENSEX_expiry(df_master):
 def get_option_symbols(df_master, expiry_date, start_strike, end_strike):
     """
     Get ALL option symbols within strike range
-    SENSEX strikes are in multiples of 100
     """
     expiry_str = expiry_date.strftime("%d-%b-%Y").upper()
 
@@ -244,7 +275,6 @@ def get_option_symbols(df_master, expiry_date, start_strike, end_strike):
 
     df["StrikePrice"] = pd.to_numeric(df["StrikePrice"], errors="coerce")
 
-    # Filter by strike range and ensure multiples of 100
     df = df[
         (df["StrikePrice"] >= start_strike) &
         (df["StrikePrice"] <= end_strike) &
@@ -252,37 +282,8 @@ def get_option_symbols(df_master, expiry_date, start_strike, end_strike):
     ]
 
     logger.info(f"Found {len(df)} option symbols between {start_strike} and {end_strike}")
-    logger.info(f"Strikes are in multiples of {SENSEX_STRIKE_MULTIPLE}")
     
     return df.sort_values(["StrikePrice", "OptionType"])
-
-
-def send_zip_to_telegram(zip_bytes, zip_name, max_retries=5):
-    """
-    Send zip to Telegram
-    """
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        logger.warning("Telegram credentials not set, skipping Telegram upload")
-        return False
-    
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendDocument"
-    
-    try:
-        files = {
-            "document": (zip_name, zip_bytes, "application/zip")
-        }
-        data = {"chat_id": TELEGRAM_CHAT_ID}
-
-        logger.info(f"Sending {zip_name} to Telegram...")
-        r = requests.post(url, data=data, files=files, timeout=(30, 600))
-        r.raise_for_status()
-        
-        logger.info("Telegram upload successful")
-        return True
-
-    except Exception as e:
-        logger.error(f"Telegram upload failed: {e}")
-        return False
 
 
 def create_excel_in_memory(df):
@@ -310,9 +311,6 @@ def get_candles_with_retry(smart, params, retries=MAX_RETRIES):
                 logger.warning(f"API returned error: {response}")
                 break
                 
-        except requests.exceptions.Timeout:
-            logger.warning(f"Timeout on attempt {attempt + 1}, retrying...")
-            time.sleep((attempt + 1) * 5)
         except Exception as e:
             logger.error(f"Error on attempt {attempt + 1}: {e}")
             if attempt == retries - 1:
@@ -440,35 +438,13 @@ def download_data_concurrent(smart, df, from_date, to_date, zip_buffer):
                 failed_details.append((symbol, error_msg))
 
 
-# ===============================
-# GITHUB ACTIONS SPECIFIC FUNCTIONS
-# ===============================
-def setup_angel_api():
-    """Dynamically import and setup Angel One API"""
+def save_artifact(data, filename):
+    """Save data as artifact"""
     try:
-        # Try to install smartapi if not available
-        import subprocess
-        import importlib
-        
-        try:
-            from SmartApi.smartConnect import SmartConnect
-            logger.info("SmartAPI already installed")
-        except ImportError:
-            logger.info("Installing smartapi...")
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "smartapi-python"])
-            from SmartApi.smartConnect import SmartConnect
-        
-        return SmartConnect
-    except Exception as e:
-        logger.error(f"Failed to setup Angel API: {e}")
-        return None
-
-
-def save_to_github_artifacts(data, filename):
-    """Save data as artifact for GitHub Actions"""
-    try:
+        # Create artifacts directory if it doesn't exist
         os.makedirs('artifacts', exist_ok=True)
-        filepath = f"artifacts/{filename}"
+        
+        filepath = os.path.join('artifacts', filename)
         
         if isinstance(data, pd.DataFrame):
             data.to_csv(filepath, index=False)
@@ -478,12 +454,15 @@ def save_to_github_artifacts(data, filename):
         elif isinstance(data, dict):
             with open(filepath, 'w') as f:
                 json.dump(data, f, indent=2)
+        elif isinstance(data, str):
+            with open(filepath, 'w') as f:
+                f.write(data)
         
-        logger.info(f"Saved artifact: {filepath}")
-        return filepath
+        logger.info(f"Saved artifact: {filepath} (Size: {os.path.getsize(filepath) if os.path.exists(filepath) else 0} bytes)")
+        return True
     except Exception as e:
         logger.error(f"Failed to save artifact {filename}: {e}")
-        return None
+        return False
 
 
 # ===============================
@@ -497,58 +476,101 @@ def main():
     print(f"Date: {datetime.now(IST).strftime('%d-%b-%Y %H:%M')}")
     print("="*60)
     
-    # Setup Angel One API
-    logger.info("Setting up Angel One API...")
-    SmartConnect = setup_angel_api()
+    # Create artifacts directory at start
+    os.makedirs('artifacts', exist_ok=True)
+    
+    # Check environment variables
+    logger.info("Checking environment variables...")
+    required_vars = ['ANGEL_API_KEY', 'ANGEL_CLIENT_ID', 'ANGEL_PIN', 'ANGEL_TOTP_KEY']
+    missing_vars = [var for var in required_vars if not os.getenv(var)]
+    
+    if missing_vars:
+        error_msg = f"Missing environment variables: {', '.join(missing_vars)}"
+        logger.error(error_msg)
+        save_artifact({"error": error_msg, "timestamp": datetime.now().isoformat()}, "error.json")
+        raise ValueError(error_msg)
+    
+    # Setup SmartAPI
+    logger.info("Setting up SmartAPI...")
+    SmartConnect = setup_smartapi()
     if SmartConnect is None:
-        raise Exception("Failed to setup Angel One API")
+        error_msg = "Failed to setup SmartAPI"
+        save_artifact({"error": error_msg}, "setup_error.json")
+        raise Exception(error_msg)
     
-    # Login
+    # Login to Angel One
     logger.info("Logging in to Angel One...")
-    
-    if not all([ANGEL_API_KEY, ANGEL_CLIENT_ID, ANGEL_PIN, ANGEL_TOTP_KEY]):
-        raise Exception("Angel One credentials not set in GitHub Secrets")
-    
-    smart = SmartConnect(api_key=ANGEL_API_KEY)
-    totp = pyotp.TOTP(ANGEL_TOTP_KEY).now()
-    login = smart.generateSession(ANGEL_CLIENT_ID, ANGEL_PIN, totp)
+    try:
+        smart = SmartConnect(api_key=ANGEL_API_KEY)
+        totp = pyotp.TOTP(ANGEL_TOTP_KEY).now()
+        login = smart.generateSession(ANGEL_CLIENT_ID, ANGEL_PIN, totp)
 
-    if not login or not login.get("status"):
-        raise Exception("Login failed")
-    logger.info("Login successful")
+        if not login or not login.get("status"):
+            error_msg = f"Login failed: {login}"
+            save_artifact({"error": error_msg}, "login_error.json")
+            raise Exception(error_msg)
+        logger.info("✅ Login successful")
+        
+        # Save login info
+        save_artifact({"login_status": "success", "timestamp": datetime.now().isoformat()}, "login_info.json")
+        
+    except Exception as e:
+        error_msg = f"Login error: {str(e)}"
+        save_artifact({"error": error_msg}, "login_error.json")
+        raise
     
     # Load symbol master
     logger.info("Loading BFO symbol master...")
     df_master = load_symbol_master()
     if df_master is None:
-        raise Exception("Cannot proceed without symbol master")
+        error_msg = "Cannot proceed without symbol master"
+        save_artifact({"error": error_msg}, "symbol_master_error.json")
+        raise Exception(error_msg)
     
     # Check expiry
     is_expiry, expiry_date = is_today_SENSEX_expiry(df_master)
     if not is_expiry:
         logger.info("Today is NOT SENSEX expiry day. Exiting.")
-        save_to_github_artifacts(
-            {"status": "no_expiry", "date": datetime.now(IST).strftime('%Y-%m-%d')},
+        save_artifact(
+            {
+                "status": "no_expiry", 
+                "date": datetime.now(IST).strftime('%Y-%m-%d'),
+                "message": "Not an expiry day"
+            }, 
             "no_expiry.json"
         )
+        logger.info("Script completed (not expiry day)")
         return
     
-    logger.info(f"TODAY IS SENSEX EXPIRY: {expiry_date.strftime('%d-%b-%Y')}")
+    logger.info(f"🔥 TODAY IS SENSEX EXPIRY: {expiry_date.strftime('%d-%b-%Y')}")
     
     # Calculate strike range
     logger.info("Calculating strike range...")
-    start_strike, end_strike = calculate_strike_range(smart, buffer=1000)
+    try:
+        start_strike, end_strike = calculate_strike_range(smart, buffer=1000)
+        save_artifact(
+            {"start_strike": start_strike, "end_strike": end_strike}, 
+            "strike_range.json"
+        )
+    except Exception as e:
+        error_msg = f"Failed to calculate strike range: {e}"
+        logger.error(error_msg)
+        save_artifact({"error": error_msg}, "strike_range_error.json")
+        start_strike, end_strike = 60000, 75000  # Default fallback
     
     # Get option symbols
     logger.info("Finding option symbols...")
     df = get_option_symbols(df_master, expiry_date, start_strike, end_strike)
     if df.empty:
-        raise Exception("No option symbols found")
+        error_msg = "No option symbols found"
+        save_artifact({"error": error_msg}, "no_symbols.json")
+        raise Exception(error_msg)
     
     total_symbols = len(df)
+    logger.info(f"Total symbols to download: {total_symbols}")
     
     # Save symbol list
-    save_to_github_artifacts(
+    save_artifact(
         df[["TradingSymbol", "StrikePrice", "OptionType"]],
         f"symbols_{expiry_date.strftime('%d%m%y')}.csv"
     )
@@ -561,46 +583,47 @@ def main():
     # Prepare zip buffer
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        pass
+        # Add metadata file
+        metadata = {
+            "expiry_date": expiry_date.strftime('%d-%b-%Y'),
+            "strike_range": f"{start_strike}-{end_strike}",
+            "total_symbols": total_symbols,
+            "download_start": datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')
+        }
+        zf.writestr("metadata.json", json.dumps(metadata, indent=2))
     
     # Download data
-    logger.info(f"Downloading {total_symbols} option symbols...")
+    logger.info("Starting data download...")
     start_time = time.time()
     
-    download_data_concurrent(smart, df, FROM_DATE, TO_DATE, zip_buffer)
-    
-    download_time = time.time() - start_time
+    try:
+        download_data_concurrent(smart, df, FROM_DATE, TO_DATE, zip_buffer)
+        download_time = time.time() - start_time
+        logger.info(f"Download completed in {download_time:.2f} seconds")
+    except Exception as e:
+        error_msg = f"Download failed: {e}"
+        logger.error(error_msg)
+        save_artifact({"error": error_msg}, "download_error.json")
+        download_time = time.time() - start_time
     
     # Save failed symbols if any
     if failed_details:
         failed_df = pd.DataFrame(failed_details, columns=["Symbol", "Error"])
-        save_to_github_artifacts(failed_df, f"failed_{expiry_date.strftime('%d%m%y')}.csv")
+        save_artifact(failed_df, f"failed_{expiry_date.strftime('%d%m%y')}.csv")
     
-    # Save zip file
+    # Save zip file if we have data
     if success_list:
         zip_buffer.seek(0)
         zip_data = zip_buffer.read()
-
-        # Get current time
-        current_time = datetime.now()
-
-        # Format it: %d (day), %m (month), %y (year), %H (hours), %M (minutes)
-        time_str = current_time.strftime("%d%m%y_%H:%M")
-
-        zip_name = f"SENSEX_expiry_{expiry_date.strftime('%d%m%y')}_1min_{time_str}.zip"
+        zip_name = f"SENSEX_expiry_{expiry_date.strftime('%d%m%y')}_1min.zip"
         
-        # Save locally first
-        zip_path = save_to_github_artifacts(zip_data, zip_name)
-        
-        # Send to Telegram if configured
-        if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-            telegram_sent = send_zip_to_telegram(zip_data, zip_name)
+        if len(zip_data) > 0:
+            save_artifact(zip_data, zip_name)
+            logger.info(f"Zip file saved: {zip_name} ({len(zip_data)/1024/1024:.2f} MB)")
         else:
-            telegram_sent = False
-            logger.info("Telegram not configured, skipping upload")
+            logger.warning("Zip file is empty")
     else:
-        telegram_sent = False
-        logger.warning("No data downloaded")
+        logger.warning("No data downloaded successfully")
     
     # Save summary
     summary = {
@@ -611,31 +634,52 @@ def main():
         "success_count": len(success_list),
         "failed_count": len(failed_list),
         "success_rate": (len(success_list)/total_symbols)*100 if total_symbols > 0 else 0,
-        "download_time_seconds": download_time,
-        "telegram_sent": telegram_sent,
+        "download_time_seconds": round(download_time, 2),
         "workers_used": MAX_WORKERS,
-        "timestamp": datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')
+        "timestamp": datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S'),
+        "artifacts_created": os.listdir('artifacts') if os.path.exists('artifacts') else []
     }
     
-    save_to_github_artifacts(summary, f"summary_{expiry_date.strftime('%d%m%y')}.json")
+    save_artifact(summary, f"summary_{expiry_date.strftime('%d%m%y')}.json")
     
     # Print summary
     logger.info("="*60)
     logger.info("DOWNLOAD SUMMARY")
     logger.info("="*60)
     for key, value in summary.items():
-        logger.info(f"{key}: {value}")
+        if key != "artifacts_created":
+            logger.info(f"{key}: {value}")
+    
+    # List artifacts
+    if os.path.exists('artifacts'):
+        artifacts = os.listdir('artifacts')
+        logger.info(f"Artifacts created ({len(artifacts)}):")
+        for artifact in artifacts:
+            size = os.path.getsize(os.path.join('artifacts', artifact))
+            logger.info(f"  - {artifact} ({size/1024:.1f} KB)")
+    
     logger.info("="*60)
+    logger.info("Script completed successfully")
 
 
 if __name__ == "__main__":
     try:
         main()
-        logger.info("Script completed successfully")
     except KeyboardInterrupt:
         logger.warning("Script interrupted by user")
         sys.exit(1)
     except Exception as e:
         logger.error(f"Fatal error: {e}")
         traceback.print_exc()
+        # Create error artifact even on failure
+        try:
+            os.makedirs('artifacts', exist_ok=True)
+            with open('artifacts/fatal_error.json', 'w') as f:
+                json.dump({
+                    "error": str(e),
+                    "timestamp": datetime.now().isoformat(),
+                    "traceback": traceback.format_exc()
+                }, f, indent=2)
+        except:
+            pass
         sys.exit(1)
