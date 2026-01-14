@@ -12,7 +12,7 @@ import logging
 import concurrent.futures
 from threading import Lock
 import json
-import importlib.util
+import subprocess
 
 # Setup logging
 logging.basicConfig(
@@ -36,7 +36,7 @@ WEEKS_FOR_RANGE = 4
 SENSEX_TOKEN = "99919000"
 SENSEX_STRIKE_MULTIPLE = 100
 
-# GitHub Secrets (will be set from environment)
+# GitHub Secrets
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 ANGEL_API_KEY = os.getenv("ANGEL_API_KEY")
@@ -56,46 +56,63 @@ total_symbols = 0
 # ===============================
 # UTILITY FUNCTIONS
 # ===============================
-def round_to_nearest_100(price):
-    """Round price to nearest 100"""
-    return round(price / 100) * 100
-
-
-def install_package(package_name):
-    """Install a Python package if not available"""
-    try:
-        import subprocess
-        import sys
-        subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
-        logger.info(f"Successfully installed {package_name}")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to install {package_name}: {e}")
-        return False
+def install_dependencies():
+    """Install required packages"""
+    required_packages = [
+        "pandas>=2.0.0",
+        "requests>=2.31.0",
+        "pyotp>=2.8.0",
+        "openpyxl>=3.1.2",
+        "smartapi-python>=1.3.5",
+        "logzero>=1.7.0"
+    ]
+    
+    logger.info("Installing dependencies...")
+    for package in required_packages:
+        try:
+            logger.info(f"Installing {package}...")
+            subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+            logger.info(f"✅ {package} installed")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to install {package}: {e}")
+            return False
+    
+    return True
 
 
 def setup_smartapi():
     """Dynamically setup SmartAPI"""
     try:
-        # Try to import first
+        # First install all dependencies
+        if not install_dependencies():
+            raise Exception("Failed to install dependencies")
+        
+        # Now import SmartAPI
         try:
             from SmartApi.smartConnect import SmartConnect
-            logger.info("SmartAPI already available")
+            logger.info("✅ SmartAPI imported successfully")
             return SmartConnect
-        except ImportError:
-            logger.info("Installing smartapi-python...")
-            if install_package("smartapi-python"):
-                # Reload modules
-                import importlib
-                import SmartApi
-                importlib.reload(SmartApi)
-                from SmartApi.smartConnect import SmartConnect
+        except ImportError as e:
+            logger.error(f"SmartAPI import failed: {e}")
+            
+            # Try alternative import
+            try:
+                import smartapi
+                from smartapi.smartConnect import SmartConnect
+                logger.info("✅ SmartAPI imported via alternative path")
                 return SmartConnect
-            else:
-                raise Exception("Failed to install smartapi-python")
+            except ImportError as e2:
+                logger.error(f"Alternative import also failed: {e2}")
+                raise
+            
     except Exception as e:
         logger.error(f"SmartAPI setup failed: {e}")
         return None
+
+
+def round_to_nearest_100(price):
+    """Round price to nearest 100"""
+    return round(price / 100) * 100
 
 
 def get_SENSEX_historical_data(smart_api, weeks=4):
