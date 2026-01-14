@@ -1,0 +1,69 @@
+name: SENSEX Expiry Data Downloader
+
+on:
+  # Run daily at 4:00 PM IST (10:30 AM UTC)
+  schedule:
+    - cron: '30 10 * * *'
+  
+  # Allow manual triggers
+  workflow_dispatch:
+    inputs:
+      force_run:
+        description: 'Force run even if not expiry day'
+        required: false
+        default: 'false'
+
+jobs:
+  download-sensex-data:
+    runs-on: ubuntu-latest
+    
+    env:
+      TZ: Asia/Kolkata
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Run SENSEX Data Downloader
+      env:
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        ANGEL_API_KEY: ${{ secrets.ANGEL_API_KEY }}
+        ANGEL_CLIENT_ID: ${{ secrets.ANGEL_CLIENT_ID }}
+        ANGEL_PIN: ${{ secrets.ANGEL_PIN }}
+        ANGEL_TOTP_KEY: ${{ secrets.ANGEL_TOTP_KEY }}
+      run: |
+        python sensex_data_downloader.py
+    
+    - name: Upload artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: sensex-data-artifacts
+        path: artifacts/
+        retention-days: 7
+    
+    - name: Send notification on failure
+      if: failure()
+      uses: appleboy/telegram-action@master
+      with:
+        to: ${{ secrets.TELEGRAM_CHAT_ID }}
+        token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        message: |
+          ❌ SENSEX Data Download Failed!
+          
+          Repository: ${{ github.repository }}
+          Run ID: ${{ github.run_id }}
+          Workflow: ${{ github.workflow }}
+          
+          Check logs for details: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
