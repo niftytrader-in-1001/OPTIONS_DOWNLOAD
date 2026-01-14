@@ -33,12 +33,21 @@ jobs:
     - name: Create artifacts directory
       run: |
         mkdir -p artifacts
-        echo "Artifacts directory created"
+        echo "Artifacts directory created at $(pwd)/artifacts"
     
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install pandas requests pyotp openpyxl smartapi-python
+        echo "Installing required packages..."
+        pip install pandas requests pyotp openpyxl smartapi-python logzero
+        
+        echo "Verifying installations..."
+        python -c "import pandas; print(f'pandas: {pandas.__version__}')"
+        python -c "import requests; print(f'requests: {requests.__version__}')"
+        python -c "import pyotp; print('pyotp: OK')"
+        python -c "import openpyxl; print('openpyxl: OK')"
+        python -c "import logzero; print('logzero: OK')"
+        python -c "try: from SmartApi.smartConnect import SmartConnect; print('SmartAPI: OK'); except Exception as e: print(f'SmartAPI error: {e}')"
         
     - name: Run SENSEX Data Downloader
       env:
@@ -52,15 +61,33 @@ jobs:
         echo "Starting SENSEX data downloader..."
         echo "Current time: $(date)"
         echo "Timezone: $TZ"
+        echo "Python version: $(python --version)"
+        echo "Current directory: $(pwd)"
+        echo "Directory contents:"
+        ls -la
+        
+        echo "Running main script..."
         python sensex_data_downloader.py
+        
+        echo "Script completed with exit code: $?"
     
     - name: List artifacts directory
       if: always()
       run: |
-        echo "Contents of artifacts directory:"
-        ls -la artifacts/ || echo "artifacts directory not found"
-        echo ""
-        echo "Contents of current directory:"
+        echo "Checking artifacts directory..."
+        if [ -d "artifacts" ]; then
+          echo "artifacts directory exists at $(pwd)/artifacts"
+          echo "Contents:"
+          ls -la artifacts/
+          echo "File count: $(ls -1 artifacts/ | wc -l)"
+        else
+          echo "ERROR: artifacts directory not found!"
+          echo "Creating empty artifacts directory for upload..."
+          mkdir -p artifacts
+          echo "This is a placeholder file" > artifacts/placeholder.txt
+        fi
+        
+        echo "Current directory contents after script:"
         ls -la
     
     - name: Upload artifacts
