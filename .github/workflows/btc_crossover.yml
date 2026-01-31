@@ -1,0 +1,31 @@
+name: BTC Crossover Scheduler
+
+# Trigger the workflow every 15 minutes
+on:
+  schedule:
+    - cron: "*/15 * * * *"  # every 15 minutes
+  workflow_dispatch:          # optional: allows manual trigger
+
+jobs:
+  run-btc-crossover:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run btc_crossover.py
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python btc_crossover.py
