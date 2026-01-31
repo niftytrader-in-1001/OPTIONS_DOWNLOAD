@@ -3,7 +3,7 @@ name: BTC Crossover Scheduler
 # Run every 15 minutes
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch:  # optional manual trigger
 
 jobs:
