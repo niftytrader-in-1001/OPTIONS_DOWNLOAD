@@ -237,23 +237,6 @@ def main():
 
 
     print("\nScan completed.")
-import os
-import requests
-
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-
-def send_test_message():
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": "✅ Test message: script is working!"
-    }
-    response = requests.post(url, json=payload)
-    print(response.status_code, response.text)
-
-send_test_message()
-
 # =========================================================
 
 if __name__ == "__main__":
