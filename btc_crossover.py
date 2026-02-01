@@ -9,8 +9,8 @@ base_url = 'https://api.india.delta.exchange'
 # =========================================================
 # TELEGRAM CONFIG
 # =========================================================
-#TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-#TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 def send_telegram_message(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
