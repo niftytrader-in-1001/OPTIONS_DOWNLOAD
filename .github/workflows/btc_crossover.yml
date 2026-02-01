@@ -1,13 +1,15 @@
 name: BTC Crossover Scheduler
 
 # Run every 15 minutes
+
 on:
   schedule:
-    - cron: "*/15 0-23 * * *"
-    - cron: "0 0 * * *"
+    - cron: "*/15 * * * *"
   workflow_dispatch:
-  push:
-    branches: [ main ]
+
+concurrency:
+  group: btc-crossover
+  cancel-in-progress: true
     
 jobs:
   run-btc-crossover:
